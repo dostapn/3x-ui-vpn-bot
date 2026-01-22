@@ -1,0 +1,33 @@
+[Unit]
+Description=VPN Telegram Bot for 3x-ui
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vpn-bot
+Environment=PATH=/opt/vpn-bot/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Load environment variables from .env file
+EnvironmentFile=/opt/vpn-bot/.env
+
+# Start bot
+ExecStart=/opt/vpn-bot/venv/bin/python -m bot.main
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitInterval=0
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vpn-bot
+
+[Install]
+WantedBy=multi-user.target
