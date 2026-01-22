@@ -4,6 +4,8 @@
 """
 
 import logging
+import requests
+import urllib3
 from typing import List, Dict, Any, Optional
 import py3xui
 from py3xui.inbound import Inbound
@@ -12,6 +14,20 @@ from py3xui.client import Client
 from bot.config import config
 
 logger = logging.getLogger(__name__)
+
+# Отключение проверки SSL сертификатов (для самоподписанных сертификатов)
+if not config.xui_use_ssl_cert:
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Monkey-patch requests.Session для отключения проверки SSL
+    _original_request = requests.Session.request
+
+    def _patched_request(self, *args, **kwargs):
+        kwargs["verify"] = False
+        return _original_request(self, *args, **kwargs)
+
+    requests.Session.request = _patched_request
+    logger.info("Проверка SSL сертификатов отключена для py3xui")
 
 
 class XUIApi:
@@ -22,7 +38,6 @@ class XUIApi:
             host=config.xui_host,
             username=config.xui_username,
             password=config.xui_password,
-            use_ssl_certificate=config.xui_use_ssl_cert,
         )
         self._login()
 
