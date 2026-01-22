@@ -122,9 +122,11 @@ BOT_TOKEN=123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11
 ADMIN_ID=123456789
 
 # 3x-ui API (внутренний адрес для бота)
+# ВАЖНО: Должен включать протокол http:// или https://
 XUI_HOST=http://127.0.0.1:2053
 XUI_USERNAME=admin
 XUI_PASSWORD=your_password
+XUI_USE_SSL_CERT=false  # false для самоподписанных сертификатов
 
 # Server (публичный адрес для клиентов)
 DOMAIN=your.domain.com
@@ -138,7 +140,10 @@ LOG_LEVEL=INFO
 ```
 
 **Важно:**
-- `XUI_HOST` - внутренний адрес для API (обычно `http://127.0.0.1:2053`)
+- `XUI_HOST` - внутренний адрес для API, **должен включать протокол** (`http://` или `https://`)
+  - HTTP: `http://127.0.0.1:2053`
+  - HTTPS с кастомным путем: `https://localhost:8443/dostapn-3x-ui/`
+- `XUI_USE_SSL_CERT` - проверка SSL сертификата (установите `false` для самоподписанных)
 - `DOMAIN` - публичный домен/IP для клиентских подключений
 - `DB_PATH` - путь к БД 3x-ui (обычно `/etc/x-ui/x-ui.db`)
 

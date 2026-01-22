@@ -22,6 +22,7 @@ class XUIApi:
             host=config.xui_host,
             username=config.xui_username,
             password=config.xui_password,
+            use_ssl_certificate=config.xui_use_ssl_cert,
         )
         self._login()
 

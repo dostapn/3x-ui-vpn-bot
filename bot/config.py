@@ -23,6 +23,7 @@ class Config:
     xui_host: str
     xui_username: str
     xui_password: str
+    xui_use_ssl_cert: bool
 
     # Server
     domain: str
@@ -53,10 +54,21 @@ class Config:
             raise ValueError("ADMIN_ID must be a valid integer")
 
         xui_host = os.getenv("XUI_HOST", "http://localhost:2053")
+
+        # Validate XUI_HOST has protocol scheme
+        if not xui_host.startswith(("http://", "https://")):
+            raise ValueError(
+                f"XUI_HOST must include protocol (http:// or https://): {xui_host}"
+            )
+
         xui_username = os.getenv("XUI_USERNAME", "admin")
         xui_password = os.getenv("XUI_PASSWORD")
         if not xui_password:
             raise ValueError("XUI_PASSWORD environment variable is required")
+
+        # SSL certificate verification (false for self-signed certificates)
+        xui_use_ssl_cert_str = os.getenv("XUI_USE_SSL_CERT", "true").lower()
+        xui_use_ssl_cert = xui_use_ssl_cert_str in ("true", "1", "yes")
 
         domain = os.getenv("DOMAIN", "localhost")
         subscription_port = int(os.getenv("SUBSCRIPTION_PORT", "2096"))
@@ -70,6 +82,7 @@ class Config:
             xui_host=xui_host,
             xui_username=xui_username,
             xui_password=xui_password,
+            xui_use_ssl_cert=xui_use_ssl_cert,
             domain=domain,
             subscription_port=subscription_port,
             db_path=db_path,
