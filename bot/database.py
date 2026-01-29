@@ -239,6 +239,19 @@ class Database:
             result = cursor.fetchone()
             return result[0] if result else 0
 
+    def get_user_keys_by_inbound(self, tg_id: int, inbound_id: int) -> List[Dict[str, Any]]:
+        """Получить все ключи пользователя в конкретном inbound"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT client_email FROM user_keys
+                WHERE tg_id = ? AND inbound_id = ?
+            """,
+                (tg_id, inbound_id),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
     def get_all_keys_with_users(self) -> List[Dict[str, Any]]:
         """Получить все ключи с привязанными пользователями"""
         with self.get_connection() as conn:

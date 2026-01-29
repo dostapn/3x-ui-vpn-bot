@@ -334,24 +334,58 @@ async def callback_assign_select_inbound(callback: CallbackQuery):
     inbound = xui_api.get_inbound(inbound_id)
     inbound_name = inbound.remark if inbound else f"Inbound {inbound_id}"
 
-    # Подготавливаем список клиентов с информацией об inbound
-    clients_with_info = [
-        {
+    # Получаем список уже выданных ключей пользователю в этом inbound
+    tg_id = request["tg_id"]
+    user_keys_in_inbound = db.get_user_keys_by_inbound(tg_id, inbound_id)
+    assigned_emails = {key["client_email"] for key in user_keys_in_inbound}
+
+    # Разделяем клиентов на выданные и доступные
+    assigned_clients = []
+    available_clients = []
+
+    for client in clients:
+        client_info = {
             "client": client,
             "inbound_id": inbound_id,
             "inbound_remark": inbound_name,
             "inbound_port": inbound.port if inbound else 0,
         }
-        for client in clients
-    ]
+        if client.email in assigned_emails:
+            assigned_clients.append(client_info)
+        else:
+            available_clients.append(client_info)
 
-    # Редактируем сообщение для отображения списка клиентов
-    await callback.message.edit_text(
+    # Подготавливаем текст сообщения с выданными ключами
+    message_text = (
         f"🔄 <b>Присвоение существующего ключа</b>\n\n"
         f"👤 Пользователь: {request['first_name']} (@{request['username']})\n"
         f"🖥 Inbound: {inbound_name}\n\n"
-        f"Шаг 2: Выберите клиента ({len(clients)} доступно):",
-        reply_markup=get_client_list_keyboard(clients_with_info, request_id),
+    )
+
+    # Показываем выданные ключи пользователю
+    if assigned_clients:
+        message_text += "<b>✅ Ключи пользователя в этом inbound:</b>\n"
+        for client_info in assigned_clients:
+            client = client_info["client"]
+            comment = client.comment if hasattr(client, "comment") and client.comment else ""
+            if comment:
+                message_text += f"• <code>{client.email}</code> ({comment})\n"
+            else:
+                message_text += f"• <code>{client.email}</code>\n"
+        message_text += "\n"
+
+    # Показываем доступные ключи
+    if available_clients:
+        message_text += f"<b>Шаг 2: Выберите клиента ({len(available_clients)} доступно):</b>"
+        reply_markup = get_client_list_keyboard(available_clients, request_id)
+    else:
+        message_text += "<b>Нет новых клиентов для присвоения в этом inbound</b>"
+        reply_markup = None
+
+    # Редактируем сообщение для отображения списка клиентов
+    await callback.message.edit_text(
+        message_text,
+        reply_markup=reply_markup,
         parse_mode="HTML",
     )
 

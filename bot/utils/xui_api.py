@@ -265,36 +265,29 @@ class XUIApi:
             if hasattr(stream, "security") and stream.security == "reality":
                 reality = getattr(stream, "reality_settings", None)
                 if reality:
-                    # Извлекаем параметры Reality из настроек
-                    r_settings = getattr(reality, "settings", {})
+                    if isinstance(reality, dict):
+                        r_settings = reality.get("settings", {})
+                        serverNames = reality.get("serverNames", [])
+                        shortIds = reality.get("shortIds", [])
+                    else:
+                        r_settings = getattr(reality, "settings", {})
+                        serverNames = getattr(reality, "serverNames", [])
+                        shortIds = getattr(reality, "shortIds", [])
 
                     if isinstance(r_settings, dict):
                         params["pbk"] = r_settings.get("publicKey")
                         params["fp"] = r_settings.get("fingerprint")
-                        params["sni"] = r_settings.get("serverName")
-                        params["sid"] = r_settings.get("shortId")
                         params["spx"] = r_settings.get("spiderX")
                     else:
                         params["pbk"] = getattr(r_settings, "publicKey", None)
                         params["fp"] = getattr(r_settings, "fingerprint", None)
-                        params["sni"] = getattr(r_settings, "serverName", None)
-                        params["sid"] = getattr(r_settings, "shortId", None)
                         params["spx"] = getattr(r_settings, "spiderX", None)
 
                     # Приоритет для SNI и Short ID из списков, если они заполнены
-                    if (
-                        hasattr(reality, "serverNames")
-                        and reality.serverNames
-                        and len(reality.serverNames) > 0
-                    ):
-                        params["sni"] = reality.serverNames[0]
-
-                    if (
-                        hasattr(reality, "shortIds")
-                        and reality.shortIds
-                        and len(reality.shortIds) > 0
-                    ):
-                        params["sid"] = reality.shortIds[0]
+                    if serverNames and len(serverNames) > 0:
+                        params["sni"] = serverNames[0]
+                    if shortIds and len(shortIds) > 0:
+                        params["sid"] = shortIds[0]
 
             # Flow (для XTLS) - если есть
             if hasattr(client, "flow") and client.flow:
@@ -308,7 +301,7 @@ class XUIApi:
 
         # Complete URL - полная URL
         full_url = f"{base_url}?{query_string}#{urllib.parse.quote(fragment)}"
-        logger.debug(f"Generated VLESS params: {params}, URL: {full_url}")
+        logger.info(f"Generated VLESS config for {client.email}: {full_url}")
 
         # Возвращаем полную URL
         return full_url
