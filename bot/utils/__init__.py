@@ -1,3 +1,3 @@
 """
-Utility functions and helpers
+Утилиты и вспомогательные функции для VPN бота
 """

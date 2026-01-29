@@ -19,11 +19,7 @@ def get_main_keyboard(has_keys: bool = False) -> InlineKeyboardMarkup:
     """
     buttons = [
         [InlineKeyboardButton(text="🔑 Мои ключи", callback_data="get_keys")],
-        [
-            InlineKeyboardButton(
-                text="➕ Запросить новый ключ", callback_data="request_key"
-            )
-        ],
+        [InlineKeyboardButton(text="➕ Запросить новый ключ", callback_data="request_key")],
     ]
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -40,32 +36,20 @@ def get_admin_request_keyboard(request_id: str) -> InlineKeyboardMarkup:
         InlineKeyboardMarkup с кнопками действий админа
     """
     buttons = [
-        [
-            InlineKeyboardButton(
-                text="✅ Выдать новый ключ", callback_data=f"accept_{request_id}"
-            )
-        ],
+        [InlineKeyboardButton(text="✅ Выдать новый ключ", callback_data=f"accept_{request_id}")],
         [
             InlineKeyboardButton(
                 text="🔄 Присвоить существующий", callback_data=f"assign_{request_id}"
             )
         ],
-        [
-            InlineKeyboardButton(
-                text="❌ Отклонить", callback_data=f"reject_{request_id}"
-            )
-        ],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{request_id}")],
         [
             InlineKeyboardButton(
                 text="⛔ Отклонить и заблокировать",
                 callback_data=f"denied_{request_id}",
             )
         ],
-        [
-            InlineKeyboardButton(
-                text="💬 Написать сообщение", callback_data=f"ask_{request_id}"
-            )
-        ],
+        [InlineKeyboardButton(text="💬 Написать сообщение", callback_data=f"ask_{request_id}")],
     ]
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -84,7 +68,7 @@ def get_inbound_selection_keyboard(
         request_id: Идентификатор запроса для отслеживания callback
         inbounds: Список доступных inbound'ов
         show_create_new: Показывать кнопку "Создать новый inbound"
-        prefix: Префикс callback data (по умолчанию: "select_inbound", для присвоения: "assign_inbound")
+        prefix: Префикс callback data (default: "select_inbound")
 
     Returns:
         InlineKeyboardMarkup с кнопками выбора inbound
@@ -117,19 +101,13 @@ def get_inbound_selection_keyboard(
 
     # Добавляем кнопку отмены
     buttons.append(
-        [
-            InlineKeyboardButton(
-                text="❌ Отмена", callback_data=f"cancel_request_{request_id}"
-            )
-        ]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_request_{request_id}")]
     )
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_template_inbound_keyboard(
-    request_id: str, inbounds: List[Inbound]
-) -> InlineKeyboardMarkup:
+def get_template_inbound_keyboard(request_id: str, inbounds: List[Inbound]) -> InlineKeyboardMarkup:
     """
     Клавиатура выбора шаблона inbound для клонирования
 
@@ -154,11 +132,7 @@ def get_template_inbound_keyboard(
         )
 
     buttons.append(
-        [
-            InlineKeyboardButton(
-                text="❌ Отмена", callback_data=f"cancel_request_{request_id}"
-            )
-        ]
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"cancel_request_{request_id}")]
     )
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -197,9 +171,7 @@ def get_client_list_keyboard(
         user_count = db.count_users_by_email(client.email)
 
         # Форматируем текст кнопки: email (comment) [N users]
-        comment = (
-            client.comment if hasattr(client, "comment") and client.comment else ""
-        )
+        comment = client.comment if hasattr(client, "comment") and client.comment else ""
 
         if comment:
             button_text = f"{client.email} ({comment}) [{user_count}]"
@@ -257,11 +229,7 @@ def get_key_actions_keyboard(client_email: str) -> InlineKeyboardMarkup:
     """
     buttons = [
         [InlineKeyboardButton(text="📱 QR-код", callback_data=f"qr_{client_email}")],
-        [
-            InlineKeyboardButton(
-                text="📊 Статистика", callback_data=f"stats_{client_email}"
-            )
-        ],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data=f"stats_{client_email}")],
     ]
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -270,9 +238,7 @@ def get_key_actions_keyboard(client_email: str) -> InlineKeyboardMarkup:
 def get_back_to_menu_keyboard() -> InlineKeyboardMarkup:
     """Простая кнопка возврата в главное меню"""
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]
-        ]
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Главное меню", callback_data="main_menu")]]
     )
 
 

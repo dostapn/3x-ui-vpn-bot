@@ -86,8 +86,42 @@ class Database:
             """
             )
 
+            # Таблица настроек бота
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS bot_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """
+            )
+
             conn.commit()
             logger.info("Database tables initialized")
+
+    # ===== Настройки бота =====
+
+    def get_setting(self, key: str, default: Any = None) -> Optional[str]:
+        """Получить значение настройки по ключу"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM bot_settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row["value"] if row else default
+
+    def update_setting(self, key: str, value: str):
+        """Обновить или создать настройку"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO bot_settings (key, value)
+                VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+                (key, value),
+            )
+            logger.debug(f"Updated setting {key} = {value}")
 
     # ===== Пользователи Telegram =====
 

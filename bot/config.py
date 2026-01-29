@@ -35,6 +35,9 @@ class Config:
     # Logging
     log_level: str
 
+    # Версия бота
+    version: str = "1.3.0"
+
     @classmethod
     def from_env(cls) -> "Config":
         """Загрузка конфигурации из переменных окружения"""
@@ -55,18 +58,16 @@ class Config:
 
         xui_host = os.getenv("XUI_HOST", "http://localhost:2053")
 
-        # Validate XUI_HOST has protocol scheme
+        # Проверяем, что XUI_HOST начинается с http:// или https://
         if not xui_host.startswith(("http://", "https://")):
-            raise ValueError(
-                f"XUI_HOST must include protocol (http:// or https://): {xui_host}"
-            )
+            raise ValueError(f"XUI_HOST must include protocol (http:// or https://): {xui_host}")
 
         xui_username = os.getenv("XUI_USERNAME", "admin")
         xui_password = os.getenv("XUI_PASSWORD")
         if not xui_password:
             raise ValueError("XUI_PASSWORD environment variable is required")
 
-        # SSL certificate verification (false for self-signed certificates)
+        # Проверяем, что XUI_USE_SSL_CERT является булевым значением
         xui_use_ssl_cert_str = os.getenv("XUI_USE_SSL_CERT", "true").lower()
         xui_use_ssl_cert = xui_use_ssl_cert_str in ("true", "1", "yes")
 
@@ -76,6 +77,7 @@ class Config:
         db_path = os.getenv("DB_PATH", "/app/data/x-ui.db")
         log_level = os.getenv("LOG_LEVEL", "INFO")
 
+        # Возвращаем конфигурацию
         return cls(
             bot_token=bot_token,
             admin_id=admin_id,

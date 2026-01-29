@@ -21,7 +21,14 @@ from bot.utils.keyboards import (
     get_client_list_keyboard,
     get_admin_request_keyboard,
 )
-from bot.utils.messages import format_vless_config_message
+from bot.utils.messages import (
+    format_vless_config_message,
+    get_cloning_inbound_msg,
+    get_creating_key_msg,
+    get_loading_clients_msg,
+    get_loading_inbounds_msg,
+    get_error_creating_key_msg,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +58,12 @@ async def callback_accept_request(callback: CallbackQuery):
     """
     Обработка кнопки "Одобрить" - показ выбора inbound
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔ Только для администратора", show_alert=True)
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("accept_", "")
 
     # Проверяем, существует ли запрос
@@ -63,15 +72,18 @@ async def callback_accept_request(callback: CallbackQuery):
         await callback.answer("❌ Запрос не найден или уже обработан", show_alert=True)
         return
 
-    # Получаем доступные inbound'ы
-    inbounds = xui_api.get_all_inbounds()
+    # Редактируем сообщение для отображения загрузки
+    await callback.message.edit_text(get_loading_inbounds_msg(), parse_mode="HTML")
 
+    # Получаем все inbound'ы (это может занять время)
+    inbounds = xui_api.get_all_inbounds()
     if not inbounds:
         await callback.answer(
             "❌ Нет доступных inbound'ов. Создайте через 3x-ui панель.", show_alert=True
         )
         return
 
+    # Редактируем сообщение для отображения выбора inbound'ов
     await callback.message.edit_text(
         f"🔑 <b>Выдача ключа для:</b>\n"
         f"👤 {request['first_name']} (@{request['username']})\n\n"
@@ -80,6 +92,7 @@ async def callback_accept_request(callback: CallbackQuery):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer()
 
 
@@ -88,6 +101,7 @@ async def callback_select_inbound(callback: CallbackQuery):
     """
     Обработка выбора inbound - создание клиента в выбранном inbound
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
@@ -102,15 +116,15 @@ async def callback_select_inbound(callback: CallbackQuery):
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
+    # Извлекаем tg_id и username из запроса
     tg_id = request["tg_id"]
     username = request["username"]
 
-    # Генерируем email для клиента
+    # Редактируем сообщение для отображения загрузки
+    await callback.message.edit_text(get_creating_key_msg(), parse_mode="HTML")
+
+    # Создаем клиента в выбранном inbound
     email = f"tg_{tg_id}_{username}"
-
-    # Создаем клиента в 3x-ui
-    await callback.message.edit_text("⏳ Создаю ключ...", parse_mode="HTML")
-
     client = xui_api.create_client(
         inbound_id=inbound_id,
         email=email,
@@ -119,11 +133,11 @@ async def callback_select_inbound(callback: CallbackQuery):
         enable=True,
     )
 
+    # Проверяем, успешно ли создан клиент
     if not client:
         await callback.answer("❌ Ошибка создания ключа", show_alert=True)
         await callback.message.edit_text(
-            "❌ <b>Ошибка создания ключа</b>\n\n"
-            "Проверьте логи 3x-ui или попробуйте другой inbound.",
+            get_error_creating_key_msg(),
             parse_mode="HTML",
             reply_markup=get_admin_request_keyboard(request_id),
         )
@@ -144,11 +158,6 @@ async def callback_select_inbound(callback: CallbackQuery):
     inbound = xui_api.get_inbound(inbound_id)
     inbound_name = inbound.remark if inbound else f"Inbound {inbound_id}"
 
-    # Отправляем ключ пользователю
-    from aiogram import Bot
-
-    bot = Bot(token=config.bot_token)
-
     try:
         # Форматируем сообщение используя централизованный шаблон
         user_message = format_vless_config_message(
@@ -158,9 +167,10 @@ async def callback_select_inbound(callback: CallbackQuery):
             title="✅ <b>Ваш ключ готов!</b>",
         )
 
-        await bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
+        # Отправляем ключ пользователю
+        await callback.bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
 
-        # Подтверждаем админу
+        # Редактируем сообщение для отображения успешного результата
         await callback.message.edit_text(
             f"✅ <b>Ключ выдан</b>\n\n"
             f"👤 Пользователь: {request['first_name']} (@{username})\n"
@@ -173,18 +183,15 @@ async def callback_select_inbound(callback: CallbackQuery):
         # Удаляем обработанный запрос
         db.delete_pending_request(request_id)
 
+        # Отвечаем на callback
         await callback.answer("✅ Ключ успешно выдан")
-        logger.info(
-            f"Admin created key {email} for user {tg_id} in inbound {inbound_id}"
-        )
+        logger.info(f"Admin created key {email} for user {tg_id} in inbound {inbound_id}")
 
     except Exception as e:
         logger.error(f"Failed to send key to user {tg_id}: {e}")
         await callback.answer(
             "⚠️ Ключ создан, но не удалось отправить пользователю", show_alert=True
         )
-    finally:
-        await bot.session.close()
 
 
 @admin_router.callback_query(F.data.startswith("create_inbound_"))
@@ -192,14 +199,20 @@ async def callback_create_inbound(callback: CallbackQuery, state: FSMContext):
     """
     Обработка создания нового inbound - показ выбора шаблона
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("create_inbound_", "")
 
-    # Получаем существующие inbound'ы для использования в качестве шаблонов
+    # Редактируем сообщение для отображения загрузки
+    await callback.message.edit_text(get_loading_inbounds_msg(), parse_mode="HTML")
+
+    # Получаем все inbound'ы
     inbounds = xui_api.get_all_inbounds()
 
+    # Проверяем, существуют ли inbound'ы
     if not inbounds:
         await callback.answer(
             "❌ Нет inbound'ов для клонирования. Создайте первый через панель 3x-ui.",
@@ -210,6 +223,7 @@ async def callback_create_inbound(callback: CallbackQuery, state: FSMContext):
     # Сохраняем request_id в состояние
     await state.update_data(request_id=request_id)
 
+    # Редактируем сообщение для отображения выбора шаблона
     await callback.message.edit_text(
         "📋 <b>Создание нового inbound</b>\n\n"
         "Выберите существующий inbound как шаблон для клонирования настроек:",
@@ -217,6 +231,7 @@ async def callback_create_inbound(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer()
 
 
@@ -232,47 +247,42 @@ async def callback_assign_request(callback: CallbackQuery):
     """
     Обработка кнопки "Присвоить" - показ списка inbound'ов для выбора
     """
-    logger.info(f"callback_assign_request called with data: {callback.data}")
-
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
-        logger.warning(
-            f"Non-admin user {callback.from_user.id} tried to access admin function"
-        )
+        logger.warning(f"Non-admin user {callback.from_user.id} tried to access admin function")
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("assign_", "")
-    logger.info(f"Extracted request_id: {request_id}")
+
+    # Получаем запрос
+    request = db.get_pending_request(request_id)
 
     # Проверяем, существует ли запрос
-    request = db.get_pending_request(request_id)
-    logger.info(f"Request found: {request is not None}")
-
     if not request:
         logger.error(f"Request {request_id} not found in database")
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
-    # Отвечаем на callback немедленно, чтобы предотвратить таймаут
-    await callback.answer("⏳ Загружаю список inbound'ов...")
-
     # Редактируем сообщение для отображения загрузки
     await callback.message.edit_text(
-        "⏳ <b>Загрузка списка inbound'ов...</b>\n\nПожалуйста, подождите.",
+        get_loading_inbounds_msg(),
         parse_mode="HTML",
     )
 
     # Получаем все inbound'ы (это может занять время)
     inbounds = xui_api.get_all_inbounds()
 
+    # Проверяем, существуют ли inbound'ы
     if not inbounds:
         await callback.message.edit_text(
-            "❌ <b>Нет доступных inbound'ов</b>\n\n"
-            "Создайте inbound через панель 3x-ui.",
+            "❌ <b>Нет доступных inbound'ов</b>\n\n" "Создайте inbound через панель 3x-ui.",
             parse_mode="HTML",
             reply_markup=get_admin_request_keyboard(request_id),
         )
         return
 
+    # Редактируем сообщение для отображения выбора inbound'ов
     await callback.message.edit_text(
         f"🔄 <b>Присвоение существующего ключа</b>\n\n"
         f"👤 Пользователь: {request['first_name']} (@{request['username']})\n\n"
@@ -289,30 +299,19 @@ async def callback_assign_select_inbound(callback: CallbackQuery):
     """
     Обработка выбора inbound для присвоения - показ клиентов из выбранного inbound
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
-    logger.info(f"Received assign_inbound callback: {callback.data}")
-
-    # Парсим: assign_inbound_{request_id}_{inbound_id}
-    # Удаляем префикс, получаем: {request_id}_{inbound_id}
+    # Извлекаем request_id и inbound_id из callback data
     data = callback.data.replace("assign_inbound_", "")
-
-    logger.debug(f"After removing prefix: {data}")
-
-    # Разделяем с конца, чтобы получить inbound_id (последняя часть после последнего подчеркивания)
     parts = data.rsplit("_", 1)
-    logger.debug(f"Split parts: {parts}")
-
     if len(parts) != 2:
         logger.error(f"Invalid callback data format: {callback.data}")
         await callback.answer("❌ Неверный формат данных", show_alert=True)
         return
-
     request_id = parts[0]
     inbound_id = int(parts[1])
-
-    logger.info(f"Parsed: request_id={request_id}, inbound_id={inbound_id}")
 
     # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
@@ -320,9 +319,13 @@ async def callback_assign_select_inbound(callback: CallbackQuery):
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
+    # Редактируем сообщение для отображения загрузки
+    await callback.message.edit_text(get_loading_clients_msg(), parse_mode="HTML")
+
     # Получаем клиентов для этого inbound
     clients = xui_api.get_clients_by_inbound(inbound_id)
 
+    # Проверяем, существуют ли клиенты
     if not clients:
         await callback.answer("❌ В этом inbound нет клиентов", show_alert=True)
         return
@@ -342,6 +345,7 @@ async def callback_assign_select_inbound(callback: CallbackQuery):
         for client in clients
     ]
 
+    # Редактируем сообщение для отображения списка клиентов
     await callback.message.edit_text(
         f"🔄 <b>Присвоение существующего ключа</b>\n\n"
         f"👤 Пользователь: {request['first_name']} (@{request['username']})\n"
@@ -351,6 +355,7 @@ async def callback_assign_select_inbound(callback: CallbackQuery):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer()
 
 
@@ -359,32 +364,35 @@ async def callback_assign_client(callback: CallbackQuery):
     """
     Обработка выбора клиента для присвоения
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
-    # Парсим: assign_client_{request_id}_{email}
+    # Извлекаем request_id и email из callback data
     parts = callback.data.split("_", 3)
     request_id = parts[2]
     email = parts[3]
 
-    # Получаем запрос
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
     if not request:
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
+    # Извлекаем tg_id из запроса
     tg_id = request["tg_id"]
 
-    # Находим клиента
+    # Находим клиента по email
     client_info = xui_api.find_client_by_email(email)
     if not client_info:
         await callback.answer("❌ Ключ не найден", show_alert=True)
         return
 
+    # Извлекаем inbound_id и inbound_remark из информации о клиенте
     inbound_id = client_info["inbound_id"]
     inbound_remark = client_info["inbound_remark"]
 
-    # Добавляем в базу данных
+    # Добавляем ключ в базу данных
     db.add_user_key(
         tg_id=tg_id,
         client_email=email,
@@ -395,11 +403,6 @@ async def callback_assign_client(callback: CallbackQuery):
     # Получаем VLESS конфиг
     vless_url = xui_api.get_client_config(inbound_id, email)
 
-    # Отправляем пользователю
-    from aiogram import Bot
-
-    bot = Bot(token=config.bot_token)
-
     try:
         # Форматируем сообщение используя централизованный шаблон
         user_message = format_vless_config_message(
@@ -409,9 +412,11 @@ async def callback_assign_client(callback: CallbackQuery):
             title="✅ <b>Вам присвоен ключ!</b>",
         )
 
-        await bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
+        # Отправляем ключ пользователю
+        await callback.bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
 
         # Подтверждаем админу
+        # Редактируем сообщение для отображения успешного результата
         await callback.message.edit_text(
             f"✅ <b>Ключ присвоен</b>\n\n"
             f"👤 Пользователь: {request['first_name']} (@{request['username']})\n"
@@ -422,18 +427,16 @@ async def callback_assign_client(callback: CallbackQuery):
         )
 
         # Удаляем обработанный запрос
+        # Удаляем обработанный запрос
         db.delete_pending_request(request_id)
 
+        # Отвечаем на callback
         await callback.answer("✅ Ключ присвоен")
         logger.info(f"Admin assigned key {email} to user {tg_id}")
 
     except Exception as e:
         logger.error(f"Failed to send key to user {tg_id}: {e}")
-        await callback.answer(
-            "⚠️ Ключ присвоен, но не удалось отправить", show_alert=True
-        )
-    finally:
-        await bot.session.close()
+        await callback.answer("⚠️ Ключ присвоен, но не удалось отправить", show_alert=True)
 
 
 # ===== Отклонение запроса (без блокировки) =====
@@ -444,40 +447,39 @@ async def callback_reject_request(callback: CallbackQuery):
     """
     Обработка кнопки "Отклонить" - простое отклонение запроса без блокировки
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("reject_", "")
 
-    # Получаем запрос
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
     if not request:
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
+    # Извлекаем tg_id и username из запроса
     tg_id = request["tg_id"]
     username = request["username"]
 
-    # Отправляем уведомление пользователю
-    from aiogram import Bot
-
-    bot = Bot(token=config.bot_token)
-
+    # Создаем бота
     try:
+        # Форматируем сообщение используя централизованный шаблон
         user_message = (
             "❌ <b>Ваш запрос на ключ отклонен</b>\n\n"
             "К сожалению, администратор отклонил ваш запрос.\n"
             "Вы можете создать новый запрос позже."
         )
-        await bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
+        await callback.bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Failed to send rejection notification to user {tg_id}: {e}")
-    finally:
-        await bot.session.close()
 
     # Удаляем запрос (без блокировки)
     db.delete_pending_request(request_id)
 
+    # Редактируем сообщение для отображения результата
     await callback.message.edit_text(
         f"❌ <b>Запрос отклонен</b>\n\n"
         f"👤 Пользователь: {request['first_name']} (@{username})\n"
@@ -487,10 +489,9 @@ async def callback_reject_request(callback: CallbackQuery):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer("✅ Запрос отклонен")
-    logger.info(
-        f"Admin rejected request from user {tg_id} (@{username}) without blocking"
-    )
+    logger.info(f"Admin rejected request from user {tg_id} (@{username}) without blocking")
 
 
 # ===== Отклонение запроса (с блокировкой) =====
@@ -501,26 +502,30 @@ async def callback_deny_request(callback: CallbackQuery):
     """
     Обработка кнопки "Отклонить с блокировкой" - блокировка пользователя на 24 часа без уведомления
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("denied_", "")
 
-    # Получаем запрос
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
     if not request:
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
+    # Извлекаем tg_id и username из запроса
     tg_id = request["tg_id"]
     username = request["username"]
 
     # Блокируем пользователя на 24 часа
     db.block_user(tg_id, hours=24)
 
-    # Удаляем запрос
+    # Удаляем обработанный запрос
     db.delete_pending_request(request_id)
 
+    # Редактируем сообщение для отображения результата
     await callback.message.edit_text(
         f"❌ <b>Запрос отклонен</b>\n\n"
         f"👤 Пользователь: {request['first_name']} (@{username})\n"
@@ -530,6 +535,7 @@ async def callback_deny_request(callback: CallbackQuery):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer("✅ Пользователь заблокирован")
     logger.warning(f"Admin denied request and blocked user {tg_id} (@{username})")
 
@@ -542,9 +548,11 @@ async def callback_ask_user(callback: CallbackQuery, state: FSMContext):
     """
     Обработка кнопки "Написать" - переход в FSM для получения сообщения для пользователя
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("ask_", "")
 
     # Проверяем, существует ли запрос
@@ -553,10 +561,11 @@ async def callback_ask_user(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
-    # Сохраняем в FSM состояние
+    # Сохраняем request_id и target_user_id в FSM состояние
     await state.update_data(request_id=request_id, target_user_id=request["tg_id"])
     await state.set_state(AdminStates.waiting_ask_message)
 
+    # Редактируем сообщение для отображения запроса на отправку сообщения
     await callback.message.edit_text(
         f"💬 <b>Отправка сообщения пользователю</b>\n\n"
         f"👤 {request['first_name']} (@{request['username']})\n\n"
@@ -565,6 +574,7 @@ async def callback_ask_user(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer()
 
 
@@ -573,38 +583,36 @@ async def process_ask_message(message: Message, state: FSMContext):
     """
     Обработка сообщения от админа для отправки пользователю
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(message.from_user.id):
         return
 
+    # Извлекаем request_id и target_user_id из FSM состояния
     data = await state.get_data()
     target_user_id = data.get("target_user_id")
     request_id = data.get("request_id")
 
+    # Проверяем, существуют ли данные запроса
     if not target_user_id or not request_id:
         await message.answer("❌ Ошибка: данные запроса потеряны")
         await state.clear()
         return
 
-    # Получаем информацию о запросе
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
     if not request:
         await message.answer("❌ Запрос больше не существует")
         await state.clear()
         return
 
-    # Отправляем сообщение пользователю
-    from aiogram import Bot
-
-    bot = Bot(token=config.bot_token)
-
     try:
+        # Форматируем сообщение пользователю
         user_message = "💬 <b>Сообщение от администратора:</b>\n\n" f"{message.text}"
 
-        await bot.send_message(
-            chat_id=target_user_id, text=user_message, parse_mode="HTML"
-        )
+        # Отправляем сообщение пользователю
+        await message.bot.send_message(chat_id=target_user_id, text=user_message, parse_mode="HTML")
 
-        # Подтверждаем админу и восстанавливаем кнопки запроса
+        # Отправляем сообщение админу
         await message.answer(
             f"✅ <b>Сообщение отправлено</b>\n\n"
             f"👤 Пользователь: {request['first_name']} (@{request['username']})\n\n"
@@ -613,13 +621,13 @@ async def process_ask_message(message: Message, state: FSMContext):
             parse_mode="HTML",
         )
 
+        # Логируем успешную отправку сообщения
         logger.info(f"Admin sent message to user {target_user_id}")
 
     except Exception as e:
         logger.error(f"Failed to send message to user {target_user_id}: {e}")
         await message.answer("❌ Ошибка отправки сообщения")
     finally:
-        await bot.session.close()
         await state.clear()
 
 
@@ -629,17 +637,20 @@ async def process_ask_message(message: Message, state: FSMContext):
 @admin_router.callback_query(F.data.startswith("cancel_request_"))
 async def callback_cancel_request(callback: CallbackQuery):
     """Отмена обработки запроса и возврат к исходному сообщению"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("cancel_request_", "")
 
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
     if not request:
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
-    # Восстанавливаем исходное сообщение запроса
+    # Форматируем сообщение используя централизованный шаблон
     admin_text = "🔑 <b>Новый запрос на ключ</b>\n\n" f"👤 Имя: {request['first_name']}"
 
     if request.get("last_name"):
@@ -651,38 +662,45 @@ async def callback_cancel_request(callback: CallbackQuery):
         f"🆔 Request ID: <code>{request_id}</code>"
     )
 
+    # Редактируем сообщение для отображения исходного сообщения запроса
     await callback.message.edit_text(
         admin_text,
         reply_markup=get_admin_request_keyboard(request_id),
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer("↩️ Отменено")
 
 
 @admin_router.callback_query(F.data.startswith("cancel_assign_"))
 async def callback_cancel_assign(callback: CallbackQuery):
     """Отмена присвоения и возврат к запросу"""
+    # Вызываем функцию для отмены запроса
     await callback_cancel_request(callback)
 
 
 @admin_router.callback_query(F.data.startswith("back_to_request_"))
 async def callback_back_to_request(callback: CallbackQuery):
     """Возврат к деталям запроса из выбора клиента"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем request_id из callback data
     request_id = callback.data.replace("back_to_request_", "")
+
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
 
     if not request:
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
-    # Показываем детали запроса снова
-    created_time = datetime.fromtimestamp(request["created_at"]).strftime(
-        "%d.%m.%Y %H:%M"
-    )
+    # Форматируем время создания запроса
+    created_time = datetime.fromtimestamp(request["created_at"]).strftime("%d.%m.%Y %H:%M")
+
+    # Редактируем сообщение для отображения деталей запроса
     await callback.message.edit_text(
         f"📨 <b>Новый запрос на ключ</b>\n\n"
         f"👤 Пользователь: {request['first_name']} "
@@ -693,6 +711,8 @@ async def callback_back_to_request(callback: CallbackQuery):
         reply_markup=get_admin_request_keyboard(request_id),
         parse_mode="HTML",
     )
+
+    # Отвечаем на callback
     await callback.answer()
 
 
@@ -701,41 +721,43 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
     """
     Обработка выбора шаблона inbound - клонирование настроек и создание нового inbound
     """
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
-    # Парсим: template_{request_id}_{template_inbound_id}
+    # Извлекаем request_id и template_id из callback data
     parts = callback.data.split("_")
     request_id = parts[1]
     template_id = int(parts[2])
 
-    # Получаем запрос
+    # Проверяем, существует ли запрос
     request = db.get_pending_request(request_id)
     if not request:
         await callback.answer("❌ Запрос не найден", show_alert=True)
         return
 
-    # Получаем шаблон inbound
+    # Проверяем, существует ли шаблон inbound
     template = xui_api.get_inbound(template_id)
     if not template:
         await callback.answer("❌ Шаблон не найден", show_alert=True)
         return
 
+    # Извлекаем tg_id и username из запроса
     tg_id = request["tg_id"]
     username = request["username"]
+
+    # Редактируем сообщение для отображения загрузки
+    await callback.message.edit_text(get_cloning_inbound_msg(template.remark), parse_mode="HTML")
 
     # Генерируем email для клиента
     email = f"tg_{tg_id}_{username}"
 
     # Создаем новый inbound путем клонирования шаблона
-    await callback.message.edit_text(
-        f"⏳ Клонирую inbound '{template.remark}' и создаю ключ...", parse_mode="HTML"
-    )
-
     new_inbound = xui_api.create_inbound_from_template(
         template_id=template_id, new_remark=f"User_{tg_id}_{username}"
     )
 
+    # Проверяем, успешно ли создан новый inbound
     if not new_inbound:
         await callback.answer("❌ Ошибка клонирования inbound", show_alert=True)
         await callback.message.edit_text(
@@ -746,6 +768,7 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
         )
         return
 
+    # Извлекаем id нового inbound
     new_inbound_id = new_inbound["id"]
 
     # Создаем клиента в новом inbound
@@ -757,6 +780,7 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
         enable=True,
     )
 
+    # Проверяем, успешно ли создан клиент
     if not client:
         await callback.answer("❌ Ошибка создания ключа", show_alert=True)
         return
@@ -772,12 +796,8 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
     # Получаем subscription URL
     sub_url = xui_api.get_subscription_url(email)
 
-    # Отправляем ключ пользователю
-    from aiogram import Bot
-
-    bot = Bot(token=config.bot_token)
-
     try:
+        # Форматируем сообщение используя по шаблону
         user_message = (
             "✅ <b>Ваш ключ готов!</b>\n\n"
             f"🔑 Email: <code>{email}</code>\n"
@@ -792,9 +812,11 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
             f"✅ Готово! Можете подключаться."
         )
 
-        await bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
+        # Отправляем ключ пользователю
+        await callback.bot.send_message(chat_id=tg_id, text=user_message, parse_mode="HTML")
 
         # Подтверждаем админу
+        # Редактируем сообщение для отображения успешного результата
         await callback.message.edit_text(
             f"✅ <b>Новый inbound создан и ключ выдан</b>\n\n"
             f"👤 Пользователь: {request['first_name']} (@{username})\n"
@@ -808,18 +830,15 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
         # Удаляем обработанный запрос
         db.delete_pending_request(request_id)
 
+        # Отвечаем на callback
         await callback.answer("✅ Inbound создан, ключ выдан")
-        logger.info(
-            f"Admin created inbound {new_inbound_id} and key {email} for user {tg_id}"
-        )
+        logger.info(f"Admin created inbound {new_inbound_id} and key {email} for user {tg_id}")
 
     except Exception as e:
         logger.error(f"Failed to send key to user {tg_id}: {e}")
         await callback.answer(
             "⚠️ Ключ создан, но не удалось отправить пользователю", show_alert=True
         )
-    finally:
-        await bot.session.close()
 
 
 # ===== Управление блокировками =====
@@ -828,12 +847,15 @@ async def callback_template_inbound(callback: CallbackQuery, state: FSMContext):
 @admin_router.message(Command("bans"))
 async def cmd_bans(message: Message):
     """Показать список заблокированных пользователей (только для админа)"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для администратора")
         return
 
+    # Получаем все заблокированные пользователи
     blocked_users = db.get_all_blocked_users()
 
+    # Проверяем, есть ли заблокированные пользователи
     if not blocked_users:
         await message.answer(
             "✅ <b>Список блокировок пуст</b>\n\n" "Нет заблокированных пользователей.",
@@ -841,6 +863,7 @@ async def cmd_bans(message: Message):
         )
         return
 
+    # Форматируем сообщение используя шаблон:
     text = "🚫 <b>Заблокированные пользователи:</b>\n\n"
 
     for user in blocked_users:
@@ -861,6 +884,7 @@ async def cmd_bans(message: Message):
             f"🔓 Разблокировать: /unban_{tg_id}\n\n"
         )
 
+    # Отправляем сообщение
     await message.answer(text, parse_mode="HTML")
     logger.info(f"Admin {message.from_user.id} viewed blocked users list")
 
@@ -868,12 +892,15 @@ async def cmd_bans(message: Message):
 @admin_router.message(Command("requests"))
 async def cmd_requests(message: Message):
     """Показать список всех незавершенных запросов с кнопками действий (только для админа)"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для администратора")
         return
 
+    # Получаем все незавершенные запросы
     pending_requests = db.get_all_pending_requests()
 
+    # Проверяем, есть ли незавершенные запросы
     if not pending_requests:
         await message.answer(
             "✅ <b>Нет незавершенных запросов</b>\n\n" "Все запросы обработаны.",
@@ -881,7 +908,7 @@ async def cmd_requests(message: Message):
         )
         return
 
-    # Отправляем заголовок
+    # Отправляем сообщение с заголовком
     await message.answer(
         f"📨 <b>Незавершенные запросы на ключи: {len(pending_requests)}</b>",
         parse_mode="HTML",
@@ -896,9 +923,7 @@ async def cmd_requests(message: Message):
         created_at = datetime.fromtimestamp(request["created_at"])
         request_id = request["request_id"]
 
-        request_text = (
-            f"📨 <b>Новый запрос на ключ</b>\n\n" f"👤 Пользователь: {first_name}"
-        )
+        request_text = f"📨 <b>Новый запрос на ключ</b>\n\n" f"👤 Пользователь: {first_name}"
 
         if last_name:
             request_text += f" {last_name}"
@@ -916,25 +941,24 @@ async def cmd_requests(message: Message):
             parse_mode="HTML",
         )
 
-    logger.info(
-        f"Admin {message.from_user.id} viewed {len(pending_requests)} pending requests"
-    )
+    logger.info(f"Admin {message.from_user.id} viewed {len(pending_requests)} pending requests")
 
 
 @admin_router.message(Command("keys"))
 async def cmd_keys(message: Message):
     """Показать список всех ключей с присвоенными пользователями (только для админа)"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для администратора")
         return
 
-    # Получаем все ключи из базы данных
+    # Получаем все ключи с присвоенными пользователями
     all_keys = db.get_all_keys_with_users()
 
+    # Проверяем, есть ли ключи с присвоенными пользователями
     if not all_keys:
         await message.answer(
-            "✅ <b>Нет присвоенных ключей</b>\n\n"
-            "Ключи появятся после присвоения пользователям.",
+            "✅ <b>Нет присвоенных ключей</b>\n\n" "Ключи появятся после присвоения пользователям.",
             parse_mode="HTML",
         )
         return
@@ -957,10 +981,8 @@ async def cmd_keys(message: Message):
             }
         )
 
-    # Отправляем заголовок
-    await message.answer(
-        f"🔑 <b>Все ключи с привязками: {len(keys_dict)}</b>", parse_mode="HTML"
-    )
+    # Отправляем сообщение с заголовком
+    await message.answer(f"🔑 <b>Все ключи с привязками: {len(keys_dict)}</b>", parse_mode="HTML")
 
     # Отправляем каждый ключ с пользователями
     for email, data in keys_dict.items():
@@ -975,7 +997,7 @@ async def cmd_keys(message: Message):
                 f"   🆔 <code>{user['tg_id']}</code>\n"
             )
 
-        # Добавляем кнопки действий
+        # Отправляем сообщение с ключом и пользователями
         from bot.utils.keyboards import get_key_management_keyboard
 
         await message.answer(
@@ -990,15 +1012,18 @@ async def cmd_keys(message: Message):
 @admin_router.callback_query(F.data.startswith("manage_users_"))
 async def callback_manage_users(callback: CallbackQuery):
     """Показать пользователей для конкретного ключа с опциями управления"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем email из callback data
     email = callback.data.replace("manage_users_", "")
 
-    # Получаем всех пользователей с этим ключом
+    # Получаем все ключи с присвоенными пользователями
     all_keys = db.get_all_keys_with_users()
     users_with_key = [k for k in all_keys if k["client_email"] == email]
 
+    # Проверяем, есть ли пользователи с этим ключом
     if not users_with_key:
         await callback.answer("❌ Нет пользователей с этим ключом", show_alert=True)
         return
@@ -1023,22 +1048,17 @@ async def callback_manage_users(callback: CallbackQuery):
         )
         buttons.append(
             [
-                InlineKeyboardButton(
-                    text="🗑 Отвязать", callback_data=f"unbind_{tg_id}_{email}"
-                ),
-                InlineKeyboardButton(
-                    text="🚫 Забанить", callback_data=f"ban_user_{tg_id}"
-                ),
+                InlineKeyboardButton(text="🗑 Отвязать", callback_data=f"unbind_{tg_id}_{email}"),
+                InlineKeyboardButton(text="🚫 Забанить", callback_data=f"ban_user_{tg_id}"),
             ]
         )
 
-    # Кнопка "Назад"
-    buttons.append(
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_keys_list")]
-    )
+    # Добавляем кнопку "Назад"
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_keys_list")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
+    # Редактируем сообщение для отображения списка пользователей
     await callback.message.edit_text(
         f"👥 <b>Пользователи ключа {email}</b>\n\n"
         f"Всего: {len(users_with_key)}\n\n"
@@ -1047,16 +1067,18 @@ async def callback_manage_users(callback: CallbackQuery):
         parse_mode="HTML",
     )
 
+    # Отвечаем на callback
     await callback.answer()
 
 
 @admin_router.callback_query(F.data.startswith("unbind_"))
 async def callback_unbind_user(callback: CallbackQuery):
     """Отвязать ключ от пользователя"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
-    # Парсим: unbind_{tg_id}_{email}
+    # Извлекаем tg_id и email из callback data
     parts = callback.data.replace("unbind_", "").rsplit("_", 1)
     if len(parts) != 2:
         await callback.answer("❌ Неверный формат", show_alert=True)
@@ -1065,12 +1087,13 @@ async def callback_unbind_user(callback: CallbackQuery):
     tg_id = int(parts[0])
     email = parts[1]
 
-    # Удаляем привязку
+    # Удаляем привязку ключа от пользователя
     db.remove_user_key(tg_id, email)
 
+    # Отвечаем на callback
     await callback.answer(f"✅ Ключ {email} отвязан от пользователя {tg_id}")
 
-    # Обновляем список
+    # Обновляем список пользователей
     await callback_manage_users(callback)
 
     logger.info(f"Admin {callback.from_user.id} unbound {email} from user {tg_id}")
@@ -1079,9 +1102,11 @@ async def callback_unbind_user(callback: CallbackQuery):
 @admin_router.callback_query(F.data.startswith("ban_user_"))
 async def callback_ban_user(callback: CallbackQuery):
     """Забанить пользователя из управления ключами"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Извлекаем tg_id из callback data
     tg_id = int(callback.data.replace("ban_user_", ""))
 
     # Блокируем пользователя на 24 часа
@@ -1091,7 +1116,9 @@ async def callback_ban_user(callback: CallbackQuery):
     user = db.get_user(tg_id)
     username = user["username"] if user else "unknown"
 
+    # Отвечаем на callback
     await callback.answer(f"🚫 Пользователь {username} заблокирован на 24ч")
+    # Логируем успешную блокировку пользователя
 
     logger.info(f"Admin {callback.from_user.id} banned user {tg_id}")
 
@@ -1099,34 +1126,36 @@ async def callback_ban_user(callback: CallbackQuery):
 @admin_router.callback_query(F.data == "admin_keys_list")
 async def callback_admin_keys_list(callback: CallbackQuery):
     """Возврат к списку ключей"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(callback.from_user.id):
         return
 
+    # Удаляем сообщение
     await callback.message.delete()
+
+    # Отвечаем на callback
     await callback.answer("Используйте /keys для просмотра списка")
 
 
 @admin_router.callback_query(F.data == "noop")
 async def callback_noop(callback: CallbackQuery):
     """Callback без операции"""
+    # Отвечаем на callback
     await callback.answer()
 
 
 @admin_router.message(Command(commands=["unban"], magic=F.args.regexp(r"^\d+$")))
 async def cmd_unban(message: Message):
     """Разблокировать пользователя по ID (только для админа)"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для администратора")
         return
 
     # Извлекаем ID пользователя из команды
-    tg_id = (
-        int(message.text.split("_")[1])
-        if "_" in message.text
-        else int(message.text.split()[1])
-    )
+    tg_id = int(message.text.split("_")[1]) if "_" in message.text else int(message.text.split()[1])
 
-    # Проверяем, существует ли пользователь
+    # Проверяем, существует ли пользователь в базе данных
     user = db.get_user(tg_id)
     if not user:
         await message.answer(
@@ -1145,6 +1174,7 @@ async def cmd_unban(message: Message):
     # Разблокируем пользователя
     db.unblock_user(tg_id)
 
+    # Отправляем сообщение о разблокировке пользователя
     await message.answer(
         f"✅ <b>Пользователь разблокирован</b>\n\n"
         f"👤 {user['first_name']} (@{user['username']})\n"
@@ -1159,6 +1189,7 @@ async def cmd_unban(message: Message):
 @admin_router.message(F.text.regexp(r"^/unban_\d+$"))
 async def cmd_unban_inline(message: Message):
     """Обработка inline команды разблокировки /unban_123456"""
+    # Проверяем, является ли пользователь администратором
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Только для администратора")
         return
@@ -1169,9 +1200,7 @@ async def cmd_unban_inline(message: Message):
     # Проверяем, существует ли пользователь
     user = db.get_user(tg_id)
     if not user:
-        await message.answer(
-            f"❌ Пользователь с ID {tg_id} не найден", parse_mode="HTML"
-        )
+        await message.answer(f"❌ Пользователь с ID {tg_id} не найден", parse_mode="HTML")
         return
 
     # Проверяем, заблокирован ли пользователь
@@ -1184,6 +1213,7 @@ async def cmd_unban_inline(message: Message):
     # Разблокируем пользователя
     db.unblock_user(tg_id)
 
+    # Отправляем сообщение о разблокировке пользователя
     await message.answer(
         f"✅ <b>Пользователь разблокирован</b>\n\n"
         f"👤 {user['first_name']} (@{user['username']})\n"
@@ -1197,26 +1227,29 @@ async def cmd_unban_inline(message: Message):
 # ===== Ответ на сообщения пользователей =====
 
 
-@admin_router.message(F.text & F.reply_to_message & F.from_user.id == config.admin_id)
+@admin_router.message(F.text & F.reply_to_message)
 async def handle_admin_reply(message: Message):
     """
     Обработка reply от админа на сообщения пользователей
     Отправляет ответ пользователю
     """
+    # Проверяем, является ли пользователь администратором
+    if not is_admin(message.from_user.id):
+        return
 
     # Извлекаем ID пользователя из оригинального сообщения
     original_text = message.reply_to_message.text
 
+    # Проверяем, есть ли текст в оригинальном сообщении
     if not original_text:
         logger.warning("Reply message has no text")
         return
 
     logger.debug(f"Admin reply received. Original text: {original_text[:200]}")
 
-    # Ищем ID в разных форматах
+    # Ищем ID в разных форматах используя regex
     import re
 
-    # Пробуем разные варианты regex (более гибкие)
     patterns = [
         r"🆔\s*(?:ID|Telegram ID):\s*<code>(\d+)</code>",  # С тегом code
         r"🆔\s*(?:ID|Telegram ID):\s*(\d+)",  # Без тега code
@@ -1240,6 +1273,7 @@ async def handle_admin_reply(message: Message):
         )
         return
 
+    # Извлекаем ID пользователя из match
     user_id = int(match.group(1))
     logger.info(f"Extracted user_id: {user_id}")
 
@@ -1249,19 +1283,16 @@ async def handle_admin_reply(message: Message):
         await message.answer(f"❌ Пользователь с ID {user_id} не найден в базе данных.")
         return
 
-    # Отправляем ответ пользователю
-    from aiogram import Bot
-
-    bot = Bot(token=config.bot_token)
-
+    # Создаем бота
     try:
-        await bot.send_message(
+        # Отправляем сообщение пользователю
+        await message.bot.send_message(
             chat_id=user_id,
             text=(f"💬 <b>Сообщение от администратора:</b>\n\n" f"{message.text}"),
             parse_mode="HTML",
         )
 
-        # Подтверждаем админу
+        # Отправляем сообщение админу
         username_display = user["username"] or "нет username"
         await message.answer(
             f"✅ <b>Сообщение отправлено</b>\n\n"
@@ -1278,5 +1309,3 @@ async def handle_admin_reply(message: Message):
             f"❌ Ошибка отправки сообщения пользователю {user_id}.\n\n"
             f"Возможно, пользователь заблокировал бота."
         )
-    finally:
-        await bot.session.close()

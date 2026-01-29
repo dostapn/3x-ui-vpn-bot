@@ -34,6 +34,7 @@ class XUIApi:
     """Обёртка вокруг библиотеки py3xui с обработкой ошибок"""
 
     def __init__(self):
+        """Инициализация API"""
         self.api = py3xui.Api(
             host=config.xui_host,
             username=config.xui_username,
@@ -76,7 +77,7 @@ class XUIApi:
     ) -> Optional[Inbound]:
         """Создать новый inbound клонированием существующего"""
         try:
-            # Clone settings from template
+            # Клонируем inbound из существующего
             new_inbound = Inbound(
                 enable=True,
                 remark=new_remark,
@@ -89,6 +90,7 @@ class XUIApi:
                 allocate=template_inbound.allocate,
             )
 
+            # Создаем новый inbound
             result = self.api.inbound.add(new_inbound)
             logger.info(f"Created new inbound '{new_remark}' on port {new_port}")
             return result
@@ -101,38 +103,42 @@ class XUIApi:
     def get_clients_by_inbound(self, inbound_id: int) -> List[Client]:
         """Получить всех клиентов для конкретного inbound"""
         try:
-            # Get inbound to access its clients via settings
+            # Получаем inbound для доступа к его клиентам через settings
             inbound = self.api.inbound.get_by_id(inbound_id)
 
+            # Проверяем, есть ли inbound
             if not inbound:
                 logger.warning(f"Inbound {inbound_id} not found")
                 return []
 
-            # Clients are in inbound.settings.clients, not client_stats
+            # Проверяем, есть ли настройки для inbound
             if not hasattr(inbound, "settings") or not inbound.settings:
                 logger.debug(f"No settings found for inbound {inbound_id}")
                 return []
 
+            # Проверяем, есть ли клиенты в настройках inbound
             if not hasattr(inbound.settings, "clients") or not inbound.settings.clients:
                 logger.debug(f"No clients found for inbound {inbound_id}")
                 return []
 
+            # Получаем клиентов из настроек inbound
             clients = inbound.settings.clients
             logger.debug(f"Retrieved {len(clients)} clients for inbound {inbound_id}")
             return clients
         except Exception as e:
-            logger.error(
-                f"Failed to get clients for inbound {inbound_id}: {e}", exc_info=True
-            )
+            logger.error(f"Failed to get clients for inbound {inbound_id}: {e}", exc_info=True)
             return []
 
     def get_all_clients(self) -> List[Dict[str, Any]]:
         """Получить всех клиентов из всех inbound'ов с информацией об inbound"""
+        # Создаем список для всех клиентов
         all_clients = []
         inbounds = self.get_all_inbounds()
 
+        # Получаем все inbound'ы
         for inbound in inbounds:
             clients = self.get_clients_by_inbound(inbound.id)
+            # Добавляем клиентов в список
             for client in clients:
                 all_clients.append(
                     {
@@ -143,13 +149,17 @@ class XUIApi:
                     }
                 )
 
+        # Возвращаем список всех клиентов
         logger.debug(f"Retrieved {len(all_clients)} total clients")
         return all_clients
 
     def find_client_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Найти клиента по email во всех inbound'ах"""
+        # Получаем всех клиентов из всех inbound'ов
         all_clients = self.get_all_clients()
+        # Проверяем, есть ли клиент с таким email
         for client_info in all_clients:
+            # Если клиент с таким email найден, возвращаем его информацию
             if client_info["client"].email == email:
                 return client_info
         return None
@@ -178,9 +188,10 @@ class XUIApi:
         try:
             import uuid
 
-            # Convert GB to bytes for 3x-ui
+            # Конвертируем GB в байты для 3x-ui
             total_bytes = total_gb * 1024 * 1024 * 1024 if total_gb > 0 else 0
 
+            # Создаем нового клиента
             new_client = Client(
                 id=str(uuid.uuid4()),
                 email=email,
@@ -189,6 +200,7 @@ class XUIApi:
                 expiry_time=expiry_time,
             )
 
+            # Добавляем нового клиента в inbound
             self.api.client.add(inbound_id, [new_client])
             logger.info(f"Created client {email} in inbound {inbound_id}")
             return new_client
@@ -199,19 +211,20 @@ class XUIApi:
     def get_client_config(self, inbound_id: int, email: str) -> Optional[str]:
         """Получить VLESS/VMESS конфиг для клиента"""
         try:
+            # Получаем всех клиентов для конкретного inbound
             clients = self.get_clients_by_inbound(inbound_id)
             for client in clients:
                 if client.email == email:
-                    # Get inbound to construct config URL
+                    # Получаем inbound для построения URL конфигурации
                     inbound = self.get_inbound(inbound_id)
                     if not inbound:
                         return None
 
-                    # Construct config based on protocol
-                    # This is simplified - actual implementation depends on protocol
+                    # Построить конфиг на основе протокола
                     config_url = self._build_config_url(inbound, client)
                     return config_url
 
+            # Если клиент не найден, отправляем сообщение об ошибке
             logger.warning(f"Client {email} not found in inbound {inbound_id}")
             return None
         except Exception as e:
@@ -223,94 +236,81 @@ class XUIApi:
         import urllib.parse
         from collections import OrderedDict
 
-        # Base URL
+        # Базовый URL
         base_url = f"vless://{client.id}@{config.domain}:{inbound.port}"
 
-        # Build query parameters in specific order (important for some clients)
-        # Order: type, encryption, security, pbk, fp, sni, sid, spx, flow
+        # Построить параметры запроса в определенном порядке (важно для некоторых клиентов)
+        # Порядок: network type, encryption, security, pbk, fp, sni, sid, spx, flow
         params = OrderedDict()
 
+        # Проверяем, есть ли настройки stream для inbound
         if hasattr(inbound, "stream_settings") and inbound.stream_settings:
             stream = inbound.stream_settings
 
-            # 1. Network type (tcp, ws, grpc, etc.)
+            # Network type (tcp, ws, grpc, etc.)
             if hasattr(stream, "network") and stream.network:
                 params["type"] = stream.network
 
-            # 2. Encryption (from settings.decryption)
+            # Encryption (from settings.decryption)
             if hasattr(inbound, "settings") and inbound.settings:
-                if (
-                    hasattr(inbound.settings, "decryption")
-                    and inbound.settings.decryption
-                ):
+                if hasattr(inbound.settings, "decryption") and inbound.settings.decryption:
                     params["encryption"] = inbound.settings.decryption
 
-            # 3. Security (tls, reality, none)
+            # Security (tls, reality, none)
             if hasattr(stream, "security") and stream.security:
                 params["security"] = stream.security
 
             # Reality settings (only if security is reality)
-            if hasattr(stream, "reality_settings") and stream.reality_settings:
-                reality = stream.reality_settings
+            # pbk, fp, sni, sid, spx - reality settings only if security is reality
+            if hasattr(stream, "security") and stream.security == "reality":
+                reality = getattr(stream, "reality_settings", None)
+                if reality:
+                    # Извлекаем параметры Reality из настроек
+                    r_settings = getattr(reality, "settings", {})
 
-                # 4. Public key (pbk)
-                if hasattr(reality, "settings") and reality.settings:
+                    if isinstance(r_settings, dict):
+                        params["pbk"] = r_settings.get("publicKey")
+                        params["fp"] = r_settings.get("fingerprint")
+                        params["sni"] = r_settings.get("serverName")
+                        params["sid"] = r_settings.get("shortId")
+                        params["spx"] = r_settings.get("spiderX")
+                    else:
+                        params["pbk"] = getattr(r_settings, "publicKey", None)
+                        params["fp"] = getattr(r_settings, "fingerprint", None)
+                        params["sni"] = getattr(r_settings, "serverName", None)
+                        params["sid"] = getattr(r_settings, "shortId", None)
+                        params["spx"] = getattr(r_settings, "spiderX", None)
+
+                    # Приоритет для SNI и Short ID из списков, если они заполнены
                     if (
-                        "publicKey" in reality.settings
-                        and reality.settings["publicKey"]
+                        hasattr(reality, "serverNames")
+                        and reality.serverNames
+                        and len(reality.serverNames) > 0
                     ):
-                        params["pbk"] = reality.settings["publicKey"]
+                        params["sni"] = reality.serverNames[0]
 
-                    # 5. Fingerprint (fp)
                     if (
-                        "fingerprint" in reality.settings
-                        and reality.settings["fingerprint"]
+                        hasattr(reality, "shortIds")
+                        and reality.shortIds
+                        and len(reality.shortIds) > 0
                     ):
-                        params["fp"] = reality.settings["fingerprint"]
+                        params["sid"] = reality.shortIds[0]
 
-                # 6. Server name (sni)
-                if (
-                    hasattr(reality, "serverNames")
-                    and reality.serverNames
-                    and len(reality.serverNames) > 0
-                ):
-                    params["sni"] = reality.serverNames[0]
-                elif hasattr(reality, "settings") and reality.settings:
-                    if (
-                        "serverName" in reality.settings
-                        and reality.settings["serverName"]
-                    ):
-                        params["sni"] = reality.settings["serverName"]
-
-                # 7. Short ID (sid)
-                if (
-                    hasattr(reality, "shortIds")
-                    and reality.shortIds
-                    and len(reality.shortIds) > 0
-                ):
-                    params["sid"] = reality.shortIds[0]
-
-                # 8. Spider X (spx)
-                if hasattr(reality, "settings") and reality.settings:
-                    if "spiderX" in reality.settings and reality.settings["spiderX"]:
-                        params["spx"] = reality.settings["spiderX"]
-
-            # 9. Flow (for XTLS) - if present
+            # Flow (для XTLS) - если есть
             if hasattr(client, "flow") and client.flow:
                 params["flow"] = client.flow
 
-        # Build query string
+        # Построить строку запроса
         query_string = urllib.parse.urlencode(params)
 
-        # Fragment (remark)
+        # Fragment (remark) - комментарий к ключу
         fragment = f"{inbound.remark}-{client.email}"
 
-        # Complete URL
+        # Complete URL - полная URL
         full_url = f"{base_url}?{query_string}#{urllib.parse.quote(fragment)}"
+        logger.debug(f"Generated VLESS params: {params}, URL: {full_url}")
 
-        # Debug logging
-        logger.debug(f"Generated VLESS URL params: {params}")
-
+        # Возвращаем полную URL
         return full_url
 
     def get_subscription_url(self, email: str) -> str:
@@ -318,14 +318,13 @@ class XUIApi:
         # Формат subscription 3x-ui
         return f"https://{config.domain}:{config.subscription_port}/{email}"
 
-    def update_client_traffic(
-        self, inbound_id: int, email: str, total_gb: int, expiry_time: int
-    ):
+    def update_client_traffic(self, inbound_id: int, email: str, total_gb: int, expiry_time: int):
         """Обновить лимиты трафика клиента"""
         try:
+            # Конвертируем GB в байты для 3x-ui
             total_bytes = total_gb * 1024 * 1024 * 1024 if total_gb > 0 else 0
 
-            # Get existing client
+            # Получаем всех клиентов для конкретного inbound
             clients = self.get_clients_by_inbound(inbound_id)
             target_client = None
             for client in clients:
@@ -333,14 +332,16 @@ class XUIApi:
                     target_client = client
                     break
 
+            # Проверяем, есть ли клиент с таким email
             if not target_client:
                 logger.error(f"Client {email} not found")
                 return False
 
-            # Update client
+            # Обновляем клиента
             target_client.total_gb = total_bytes
             target_client.expiry_time = expiry_time
 
+            # Обновляем клиента в inbound
             self.api.client.update(inbound_id, target_client.id, target_client)
             logger.info(f"Updated traffic for {email}")
             return True
@@ -351,6 +352,7 @@ class XUIApi:
     def delete_client(self, inbound_id: int, client_id: str):
         """Удалить клиента из inbound"""
         try:
+            # Удаляем клиента из inbound
             self.api.client.delete(inbound_id, client_id)
             logger.info(f"Deleted client {client_id} from inbound {inbound_id}")
             return True
@@ -362,11 +364,15 @@ class XUIApi:
 
     def get_client_stats(self, email: str) -> Optional[Dict[str, Any]]:
         """Получить статистику трафика для клиента"""
+        # Получаем информацию о клиенте
         client_info = self.find_client_by_email(email)
+        # Проверяем, есть ли клиент с таким email
         if not client_info:
             return None
 
+        # Получаем клиента
         client = client_info["client"]
+        # Возвращаем статистику
         return {
             "email": client.email,
             "up": client.up if hasattr(client, "up") else 0,

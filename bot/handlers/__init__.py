@@ -1,3 +1,3 @@
 """
-Handlers package for bot commands and callbacks
+Обработчики команд и коллбэков для VPN бота
 """
