@@ -171,7 +171,7 @@ async def main():
     dp.include_router(client_router)
 
     # Регистрация обработчиков запуска/остановки
-    dp.startup.register(lambda: on_startup(bot))
+    dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
     try:
