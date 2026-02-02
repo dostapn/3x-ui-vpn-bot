@@ -1,20 +1,19 @@
-import sys
-import os
 import logging
+import os
+import shutil
+import sys
 
 # Добавляем корневой каталог проекта в путь Python
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 # Импорт после настройки путей
-from bot.database import db
+from bot.database import db  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def test_flow():
-    import shutil
-
     # Используем отдельную тестовую БД вместо боевой
     test_db_path = "/app/data/x-ui-test.db"
     shutil.copy("/app/data/x-ui.db", test_db_path)
@@ -38,13 +37,17 @@ def test_flow():
             print("\n--- 1. Setting up test data in client_traffics ---")
             # Убеждаемся, что inbound существует
             cursor.execute(
-                "INSERT OR IGNORE INTO inbounds (id, remark, port, protocol, settings, stream_settings, tag) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO inbounds "
+                "(id, remark, port, protocol, settings, stream_settings, tag) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (test_inbound_id, "test_inbound", 12345, "vless", "{}", "{}", "test"),
             )
 
             # Записываем трафик клиента
             cursor.execute(
-                "INSERT OR REPLACE INTO client_traffics (id, inbound_id, enable, email, up, down, expiry_time, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO client_traffics "
+                "(id, inbound_id, enable, email, up, down, expiry_time, total) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (9999, test_inbound_id, 1, test_email, up_val, down_val, 0, 0),
             )
 
@@ -110,7 +113,10 @@ def test_flow():
     # Проверяем, сбросились ли счетчики трафика
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT up, down FROM client_traffics WHERE email = ?", (test_email,))
+        cursor.execute(
+            "SELECT up, down FROM client_traffics WHERE email = ?",
+            (test_email,),
+        )
         row = cursor.fetchone()
         if row:
             print(f"After reset: UP={row['up']}, DOWN={row['down']}")
