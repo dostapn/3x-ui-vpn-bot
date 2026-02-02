@@ -12,6 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import config
 from bot.database import db
 from bot.utils.xui_api import xui_api
+from bot.utils.scheduler import start_scheduler
 from bot.handlers.client import client_router
 from bot.handlers.admin import admin_router
 
@@ -57,6 +58,10 @@ async def on_startup(bot: Bot):
     logger.info(f"Admin ID: {config.admin_id}")
     logger.info(f"Domain: {config.domain}")
     logger.info(f"Version: {config.version}")
+
+    # Запуск планировщика задач
+    start_scheduler(bot)
+
     logger.info("Bot is ready!")
     logger.info("=" * 50)
 

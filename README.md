@@ -376,7 +376,7 @@ ps aux | grep "python.*bot.main"
 
 Все изменения проекта документируются в **[CHANGELOG.md](CHANGELOG.md)**
 
-**Текущая версия:** 1.3.0 (UX & Reality Fix)
+**Текущая версия:** 1.5.0 (Traffic Reports)
 
 ---
 

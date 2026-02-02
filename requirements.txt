@@ -12,3 +12,6 @@ qrcode[pil]==7.4.2
 
 # Async HTTP client (dependency of py3xui)
 aiohttp==3.10.11
+
+# Scheduler
+apscheduler==3.10.4

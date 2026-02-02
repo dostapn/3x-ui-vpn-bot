@@ -36,7 +36,7 @@ class Config:
     log_level: str
 
     # Версия бота
-    version: str = "1.4.0"
+    version: str = "1.5.0"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -67,7 +67,7 @@ class Config:
         if not xui_password:
             raise ValueError("XUI_PASSWORD environment variable is required")
 
-        # Проверяем, что XUI_USE_SSL_CERT является булевым значением
+        # Проверять SSL сертификат (false для самоподписанных сертификатов)
         xui_use_ssl_cert_str = os.getenv("XUI_USE_SSL_CERT", "true").lower()
         xui_use_ssl_cert = xui_use_ssl_cert_str in ("true", "1", "yes")
 

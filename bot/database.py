@@ -96,6 +96,21 @@ class Database:
             """
             )
 
+            # Таблица истории трафика
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS traffic_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL,
+                    up INTEGER DEFAULT 0,
+                    down INTEGER DEFAULT 0,
+                    date TEXT NOT NULL,
+                    timestamp INTEGER DEFAULT (strftime('%s', 'now')),
+                    UNIQUE(email, date)
+                )
+            """
+            )
+
             conn.commit()
             logger.info("Database tables initialized")
 
@@ -160,9 +175,7 @@ class Database:
         """Проверить, заблокирован ли пользователь"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT blocked_until FROM telegram_users WHERE tg_id = ?", (tg_id,)
-            )
+            cursor.execute("SELECT blocked_until FROM telegram_users WHERE tg_id = ?", (tg_id,))
             row = cursor.fetchone()
             if row and row["blocked_until"]:
                 return row["blocked_until"] > int(datetime.now().timestamp())
@@ -177,9 +190,7 @@ class Database:
                 "UPDATE telegram_users SET blocked_until = ? WHERE tg_id = ?",
                 (blocked_until, tg_id),
             )
-            logger.info(
-                f"Blocked user {tg_id} until {datetime.fromtimestamp(blocked_until)}"
-            )
+            logger.info(f"Blocked user {tg_id} until {datetime.fromtimestamp(blocked_until)}")
 
     # ===== Ключи пользователей =====
 
@@ -298,9 +309,7 @@ class Database:
         """Получить незавершённый запрос по ID"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM pending_requests WHERE request_id = ?", (request_id,)
-            )
+            cursor.execute("SELECT * FROM pending_requests WHERE request_id = ?", (request_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -308,9 +317,7 @@ class Database:
         """Удалить незавершённый запрос"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM pending_requests WHERE request_id = ?", (request_id,)
-            )
+            cursor.execute("DELETE FROM pending_requests WHERE request_id = ?", (request_id,))
             logger.debug(f"Deleted pending request {request_id}")
 
     def get_pending_requests_by_user(self, tg_id: int) -> List[Dict[str, Any]]:
@@ -350,9 +357,7 @@ class Database:
         """Разблокировать пользователя (установить blocked_until = 0)"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE telegram_users SET blocked_until = 0 WHERE tg_id = ?", (tg_id,)
-            )
+            cursor.execute("UPDATE telegram_users SET blocked_until = 0 WHERE tg_id = ?", (tg_id,))
             logger.info(f"User {tg_id} has been unblocked")
 
     # ===== Статистика =====
@@ -370,6 +375,81 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) as count FROM user_keys")
             return cursor.fetchone()["count"]
+
+    # ===== История трафика =====
+
+    def save_traffic_snapshot(self, email: str, up: int, down: int, date: str):
+        """Сохранить снимок трафика за день"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO traffic_history (email, up, down, date)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(email, date) DO UPDATE SET
+                    up = excluded.up,
+                    down = excluded.down
+            """,
+                (email, up, down, date),
+            )
+
+    def get_traffic_stats(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """Получить суммарный трафик за период"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    email,
+                    SUM(up) as total_up,
+                    SUM(down) as total_down
+                FROM traffic_history
+                WHERE date BETWEEN ? AND ?
+                GROUP BY email
+                ORDER BY (SUM(up) + SUM(down)) DESC
+            """,
+                (start_date, end_date),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_xui_traffic_stats(self) -> List[Dict[str, Any]]:
+        """Получить текущую статистику трафика из таблиц X-UI"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # Проверяем наличие таблицы client_traffics
+            try:
+                cursor.execute("SELECT 1 FROM client_traffics LIMIT 1")
+            except sqlite3.OperationalError:
+                # Таблицы нет, возможно это не БД X-UI
+                logger.warning("Table client_traffics not found. Is DB_PATH correct?")
+                return []
+
+            cursor.execute(
+                """
+                SELECT
+                    c.email,
+                    c.up,
+                    c.down,
+                    i.remark as inbound_remark
+                FROM client_traffics c
+                JOIN inbounds i ON c.inbound_id = i.id
+                WHERE c.up > 0 OR c.down > 0
+                ORDER BY (c.up + c.down) DESC
+            """
+            )
+            #
+            return [dict(row) for row in cursor.fetchall()]
+
+    def reset_xui_traffic(self):
+        """Сбросить счетчики трафика в таблицах X-UI"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("UPDATE client_traffics SET up=0, down=0")
+                cursor.execute("UPDATE inbounds SET up=0, down=0")
+                logger.info("X-UI traffic counters reset successfully")
+            except sqlite3.OperationalError as e:
+                logger.error(f"Failed to reset X-UI traffic: {e}")
 
 
 # Глобальный экземпляр базы данных
