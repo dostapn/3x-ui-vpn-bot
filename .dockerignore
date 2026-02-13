@@ -46,7 +46,6 @@ Dockerfile
 .gitlab-ci.yml
 
 # Tests
-tests/
 .pytest_cache/
 .coverage
 htmlcov/

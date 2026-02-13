@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  # 3x-ui panel for development
+  # 3x-ui panel for development (2.8.8 + Xray 26.1.18)
   xui:
-    image: ghcr.io/mhsanaei/3x-ui:latest
+    image: ghcr.io/mhsanaei/3x-ui:v2.8.8
     container_name: vpn-bot-xui
     restart: unless-stopped
     ports:
@@ -38,6 +38,7 @@ services:
       - xui
     volumes:
       - ./bot:/app/bot
+      - ./tests:/app/tests
       - ./docker/xui-data:/app/data
     env_file:
       - .env

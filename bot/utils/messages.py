@@ -4,6 +4,17 @@
 """
 
 
+def format_bytes(size: int) -> str:
+    """Форматирует байты в читаемый вид (KB, MB, GB, TB)."""
+    power = 2**10
+    magnitude = 0
+    prefixes = ("", "K", "M", "G", "T")
+    while size >= power and magnitude + 1 < len(prefixes):
+        size /= power
+        magnitude += 1
+    return f"{size:.2f} {prefixes[magnitude]}B"
+
+
 def format_vless_config_message(
     email: str,
     inbound_name: str,

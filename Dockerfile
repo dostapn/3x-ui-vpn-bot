@@ -14,8 +14,9 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
+# Copy bot code and tests
 COPY bot/ ./bot/
+COPY tests/ ./tests/
 
 # Create data directory
 RUN mkdir -p /app/data

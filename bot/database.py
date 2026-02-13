@@ -111,6 +111,18 @@ class Database:
             """
             )
 
+            # Снимки all_time для расчёта дневного трафика (когда up/down не обновляются)
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS all_time_snapshots (
+                    email TEXT NOT NULL,
+                    all_time INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    PRIMARY KEY (email, date)
+                )
+            """
+            )
+
             conn.commit()
             logger.info("Database tables initialized")
 
@@ -394,7 +406,7 @@ class Database:
             )
 
     def get_traffic_stats(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-        """Получить суммарный трафик за период"""
+        """Получить суммарный трафик за период (только клиенты с записями в traffic_history)."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -411,6 +423,52 @@ class Database:
                 (start_date, end_date),
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_period_report_data(
+        self, start_date: str, end_date: str, period_days: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Данные для отчёта за период: ВСЕ клиенты с all_time, трафик за период, активность.
+        period_days — количество дней в периоде (7 или 30).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT
+                        c.email,
+                        c.all_time,
+                        COALESCE(th.period_traffic, 0) as period_traffic,
+                        COALESCE(th.active_days, 0) as active_days
+                    FROM client_traffics c
+                    LEFT JOIN (
+                        SELECT
+                            email,
+                            SUM(up + down) as period_traffic,
+                            SUM(CASE WHEN (up + down) > 0 THEN 1 ELSE 0 END) as active_days
+                        FROM traffic_history
+                        WHERE date BETWEEN ? AND ?
+                        GROUP BY email
+                    ) th ON c.email = th.email
+                    ORDER BY c.all_time DESC
+                """,
+                    (start_date, end_date),
+                )
+            except sqlite3.OperationalError:
+                logger.warning("Could not get period report data")
+                return []
+
+            return [
+                {
+                    "email": row["email"],
+                    "all_time": int(row["all_time"]),
+                    "period_traffic": int(row["period_traffic"]),
+                    "active_days": int(row["active_days"]),
+                    "period_days": period_days,
+                }
+                for row in cursor.fetchall()
+            ]
 
     def get_xui_traffic_stats(self) -> List[Dict[str, Any]]:
         """Получить текущую статистику трафика из таблиц X-UI"""
@@ -437,8 +495,179 @@ class Database:
                 ORDER BY (c.up + c.down) DESC
             """
             )
-            #
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_time_snapshot(self, email: str, date: str) -> Optional[int]:
+        """Получить сохранённый all_time для клиента на дату."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT all_time FROM all_time_snapshots WHERE email = ? AND date = ?",
+                (email, date),
+            )
+            row = cursor.fetchone()
+            return row["all_time"] if row else None
+
+    def save_all_time_snapshot(self, email: str, all_time: int, date: str):
+        """Сохранить снимок all_time для расчёта дневного трафика."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO all_time_snapshots (email, all_time, date)
+                VALUES (?, ?, ?)
+                ON CONFLICT(email, date) DO UPDATE SET all_time = excluded.all_time
+            """,
+                (email, all_time, date),
+            )
+
+    def backfill_daily_report(
+        self, report_date: str, report_rows: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Сохраняет all_time снимки и traffic_history после ежедневного отчёта.
+        report_rows — результат get_all_time_report_data.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("SELECT email, all_time FROM client_traffics")
+                for row in cursor.fetchall():
+                    cursor.execute(
+                        """
+                        INSERT INTO all_time_snapshots (email, all_time, date)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(email, date) DO UPDATE SET all_time = excluded.all_time
+                        """,
+                        (row["email"], int(row["all_time"]), report_date),
+                    )
+            except Exception as e:
+                logger.warning("Could not save all_time snapshots: %s", e)
+
+            for row in report_rows:
+                delta = row.get("delta")
+                down = int(delta) if delta is not None and delta >= 0 else 0
+                cursor.execute(
+                    """
+                    INSERT INTO traffic_history (email, up, down, date)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(email, date) DO UPDATE SET up = excluded.up, down = excluded.down
+                    """,
+                    (row["email"], 0, down, report_date),
+                )
+
+    def get_snapshots_for_email(self, email: str, max_days: int = 31) -> List[Dict[str, Any]]:
+        """Получить снимки all_time для клиента за последние max_days дней (по убыванию даты)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT date, all_time FROM all_time_snapshots
+                WHERE email = ?
+                ORDER BY date DESC
+                LIMIT ?
+            """,
+                (email, max_days),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_all_time_report_data(
+        self, report_date: str, prev_date: str, limit: int = 500
+    ) -> List[Dict[str, Any]]:
+        """
+        Данные для отчёта по all_time: клиенты с delta и activity.
+        report_date — дата отчёта, prev_date — вчера для расчёта delta.
+        limit — макс. число клиентов в отчёте (по умолчанию 500).
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT c.email, c.all_time, i.remark as inbound_remark
+                    FROM client_traffics c
+                    JOIN inbounds i ON c.inbound_id = i.id
+                    ORDER BY c.all_time DESC
+                    LIMIT ?
+                """,
+                    (limit,),
+                )
+            except sqlite3.OperationalError:
+                logger.warning("Table client_traffics not found")
+                return []
+
+            rows = [dict(r) for r in cursor.fetchall()]
+            if not rows:
+                return []
+
+            cursor.execute(
+                "SELECT email, all_time FROM all_time_snapshots WHERE date = ?",
+                (prev_date,),
+            )
+            prev_snapshots = {r["email"]: r["all_time"] for r in cursor.fetchall()}
+
+            # Один запрос: все снимки для emails отчёта (пачками по 100 email)
+            emails = [r["email"] for r in rows]
+            snapshots_by_email: Dict[str, List[Dict[str, Any]]] = {e: [] for e in emails}
+            chunk_size = 100
+            for i in range(0, len(emails), chunk_size):
+                chunk = emails[i : i + chunk_size]
+                placeholders = ",".join("?" * len(chunk))
+                cursor.execute(
+                    f"""
+                    SELECT email, date, all_time FROM all_time_snapshots
+                    WHERE email IN ({placeholders})
+                    ORDER BY email, date DESC
+                """,
+                    chunk,
+                )
+                for row in cursor.fetchall():
+                    e = row["email"]
+                    if len(snapshots_by_email[e]) < 31:
+                        snapshots_by_email[e].append(dict(row))
+
+            result = []
+            for row in rows:
+                email = row["email"]
+                current = int(row["all_time"])
+                prev = prev_snapshots.get(email)
+                delta = (current - prev) if prev is not None else None
+
+                snapshots = snapshots_by_email.get(email, [])
+                consecutive_inactive = 0
+                active_days = 0
+                total_days = 0
+
+                deltas: List[int] = []
+                if prev is not None:
+                    deltas.append(current - prev)
+                for j in range(len(snapshots) - 1):
+                    deltas.append(snapshots[j]["all_time"] - snapshots[j + 1]["all_time"])
+
+                if deltas:
+                    total_days = min(len(deltas), 30)
+                    for d in deltas[:30]:
+                        if d > 0:
+                            active_days += 1
+                    for d in deltas:
+                        if d > 0:
+                            break
+                        consecutive_inactive += 1
+
+                result.append(
+                    {
+                        "email": email,
+                        "all_time": current,
+                        "prev_all_time": prev,
+                        "delta": delta,
+                        "inbound_remark": row["inbound_remark"],
+                        "consecutive_inactive": consecutive_inactive,
+                        "active_days": active_days,
+                        "total_days": total_days,
+                        "has_prev": prev is not None,
+                    }
+                )
+            return result
 
     def reset_xui_traffic(self):
         """Сбросить счетчики трафика в таблицах X-UI"""

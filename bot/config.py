@@ -36,7 +36,7 @@ class Config:
     log_level: str
 
     # Версия бота
-    version: str = "1.5.1"
+    version: str = "1.5.2"
 
     @classmethod
     def from_env(cls) -> "Config":
