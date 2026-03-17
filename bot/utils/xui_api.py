@@ -4,9 +4,13 @@
 """
 
 import logging
+import uuid
+from functools import wraps
+from typing import List, Dict, Any, Optional
+from urllib.parse import urlencode, quote
+
 import requests
 import urllib3
-from typing import List, Dict, Any, Optional
 import py3xui
 from py3xui.inbound import Inbound
 from py3xui.client import Client
@@ -14,6 +18,37 @@ from py3xui.client import Client
 from bot.config import config
 
 logger = logging.getLogger(__name__)
+
+
+def handle_auth_errors(func):
+    """Декоратор для перехвата ошибок аутентификации и переавторизации"""
+
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except requests.exceptions.HTTPError as e:
+            # Проверяем, если это ошибка аутентификации (401, 403)
+            if e.response.status_code in (401, 403):
+                logger.warning(
+                    f"Authentication error ({e.response.status_code}), attempting re-login..."
+                )
+                try:
+                    self._login()
+                    logger.info("Re-login successful, retrying operation...")
+                    return func(self, *args, **kwargs)
+                except Exception as retry_error:
+                    logger.error(f"Re-login failed: {retry_error}", exc_info=True)
+                    raise
+            else:
+                # Для других HTTP ошибок просто пробрасываем дальше
+                raise
+        except Exception as e:
+            # Для других типов исключений логируем и пробрасываем
+            raise
+
+    return wrapper
+
 
 # Отключение проверки SSL сертификатов (для самоподписанных сертификатов)
 if not config.xui_use_ssl_cert:
@@ -53,55 +88,72 @@ class XUIApi:
 
     # ===== Операции с Inbound =====
 
+    @handle_auth_errors
     def get_all_inbounds(self) -> List[Inbound]:
         """Получить список всех inbound'ов"""
         try:
             inbounds = self.api.inbound.get_list()
-            logger.debug(f"Retrieved {len(inbounds)} inbounds")
+            logger.debug(f"Retrieved {len(inbounds)} inbounds from API")
             return inbounds
         except Exception as e:
-            logger.error(f"Failed to get inbounds: {e}")
+            logger.error(f"Failed to get inbounds: {e}", exc_info=True)
             return []
 
+    @handle_auth_errors
     def get_inbound(self, inbound_id: int) -> Optional[Inbound]:
         """Получить конкретный inbound по ID"""
         try:
-            inbound = self.api.inbound.get_by_id(inbound_id)
-            return inbound
+            return self.api.inbound.get_by_id(inbound_id)
         except Exception as e:
-            logger.error(f"Failed to get inbound {inbound_id}: {e}")
+            logger.error(f"Failed to get inbound {inbound_id}: {e}", exc_info=True)
             return None
 
     def create_inbound_from_template(
-        self, template_inbound: Inbound, new_remark: str, new_port: int
-    ) -> Optional[Inbound]:
+        self, template_id: int, new_remark: str
+    ) -> Optional[Dict[str, Any]]:
         """Создать новый inbound клонированием существующего"""
         try:
+            # Получаем шаблон inbound по ID
+            template = self.get_inbound(template_id)
+            if not template:
+                logger.error(f"Template inbound {template_id} not found")
+                return None
+
+            # Убеждаемся, что сессия активна
+            self._ensure_authenticated()
+
             # Клонируем inbound из существующего
             new_inbound = Inbound(
                 enable=True,
                 remark=new_remark,
-                listen=template_inbound.listen,
-                port=new_port,
-                protocol=template_inbound.protocol,
-                settings=template_inbound.settings,
-                stream_settings=template_inbound.stream_settings,
-                sniffing=template_inbound.sniffing,
-                allocate=template_inbound.allocate,
+                listen=template.listen,
+                port=0,  # Позволим 3x-ui автоматически выбрать порт
+                protocol=template.protocol,
+                settings=template.settings,
+                stream_settings=template.stream_settings,
+                sniffing=template.sniffing,
+                allocate=template.allocate,
             )
 
             # Создаем новый inbound
             result = self.api.inbound.add(new_inbound)
-            logger.info(f"Created new inbound '{new_remark}' on port {new_port}")
-            return result
+            logger.info(f"Created new inbound '{new_remark}' from template {template_id}")
+
+            # Возвращаем словарь с информацией о новом inbound
+            return {
+                "id": result.id,
+                "remark": result.remark,
+                "port": result.port,
+            }
         except Exception as e:
-            logger.error(f"Failed to create inbound: {e}")
+            logger.error(f"Failed to create inbound from template: {e}", exc_info=True)
             return None
 
     # ===== Операции с клиентами =====
 
+    @handle_auth_errors
     def get_clients_by_inbound(self, inbound_id: int) -> List[Client]:
-        """Получить всех клиентов для конкретного inbound"""
+        """Получить всех клиентов для конкретного inbound'а"""
         try:
             # Получаем inbound для доступа к его клиентам через settings
             inbound = self.api.inbound.get_by_id(inbound_id)
@@ -129,40 +181,34 @@ class XUIApi:
             logger.error(f"Failed to get clients for inbound {inbound_id}: {e}", exc_info=True)
             return []
 
-    def get_all_clients(self) -> List[Dict[str, Any]]:
-        """Получить всех клиентов из всех inbound'ов с информацией об inbound"""
-        # Создаем список для всех клиентов
-        all_clients = []
-        inbounds = self.get_all_inbounds()
-
-        # Получаем все inbound'ы
-        for inbound in inbounds:
-            clients = self.get_clients_by_inbound(inbound.id)
-            # Добавляем клиентов в список
-            for client in clients:
-                all_clients.append(
-                    {
-                        "client": client,
-                        "inbound_id": inbound.id,
-                        "inbound_remark": inbound.remark,
-                        "inbound_port": inbound.port,
-                    }
-                )
-
-        # Возвращаем список всех клиентов
-        logger.debug(f"Retrieved {len(all_clients)} total clients")
-        return all_clients
-
     def find_client_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Найти клиента по email во всех inbound'ах"""
-        # Получаем всех клиентов из всех inbound'ов
-        all_clients = self.get_all_clients()
-        # Проверяем, есть ли клиент с таким email
-        for client_info in all_clients:
-            # Если клиент с таким email найден, возвращаем его информацию
-            if client_info["client"].email == email:
-                return client_info
-        return None
+        try:
+            # Получаем все inbound'ы один раз
+            inbounds = self.get_all_inbounds()
+
+            # Проходим по каждому inbound
+            for inbound in inbounds:
+                # Получаем клиентов ТОЛЬКО этого inbound
+                clients = self.get_clients_by_inbound(inbound.id)
+
+                # Ищем клиента по email в текущем inbound
+                for client in clients:
+                    if client.email == email:
+                        # Нашли! Возвращаем информацию и сразу выходим
+                        return {
+                            "client": client,
+                            "inbound_id": inbound.id,
+                            "inbound_remark": inbound.remark,
+                            "inbound_port": inbound.port,
+                        }
+
+            # Клиент не найден ни в одном inbound
+            logger.debug(f"Client with email {email} not found in any inbound")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to find client by email {email}: {e}", exc_info=True)
+            return None
 
     def create_client(
         self,
@@ -172,23 +218,10 @@ class XUIApi:
         expiry_time: int = 0,
         enable: bool = True,
     ) -> Optional[Client]:
-        """
-        Создать нового клиента в указанном inbound
-
-        Args:
-            inbound_id: ID целевого inbound
-            email: Email клиента (уникальный идентификатор)
-            total_gb: Лимит трафика в GB (0 = безлимит)
-            expiry_time: Timestamp истечения в миллисекундах (0 = бессрочно)
-            enable: Включить клиента сразу
-
-        Returns:
-            Созданный клиент или None при ошибке
-        """
+        """Создать клиента в inbound"""
         try:
-            import uuid
-
             # Конвертируем GB в байты для 3x-ui
+            # (0 значит безлимит - не конвертируем)
             total_bytes = total_gb * 1024 * 1024 * 1024 if total_gb > 0 else 0
 
             # Создаем нового клиента
@@ -205,11 +238,11 @@ class XUIApi:
             logger.info(f"Created client {email} in inbound {inbound_id}")
             return new_client
         except Exception as e:
-            logger.error(f"Failed to create client {email}: {e}")
+            logger.error(f"Failed to create client {email}: {e}", exc_info=True)
             return None
 
     def get_client_config(self, inbound_id: int, email: str) -> Optional[str]:
-        """Получить VLESS/VMESS конфиг для клиента"""
+        """Получить VLESS конфиг URL для клиента"""
         try:
             # Получаем всех клиентов для конкретного inbound
             clients = self.get_clients_by_inbound(inbound_id)
@@ -233,15 +266,12 @@ class XUIApi:
 
     def _build_config_url(self, inbound: Inbound, client: Client) -> str:
         """Построить VLESS/VMESS конфиг URL с правильными параметрами"""
-        import urllib.parse
-        from collections import OrderedDict
-
-        # Базовый URL
+        # Базовый URL формат: vless://uuid@domain:port
         base_url = f"vless://{client.id}@{config.domain}:{inbound.port}"
 
-        # Построить параметры запроса в определенном порядке (важно для некоторых клиентов)
-        # Порядок: network type, encryption, security, pbk, fp, sni, sid, spx, flow
-        params = OrderedDict()
+        # Параметры в порядке вставки (важно!) (Python 3.7+ сохраняет порядок в dict)
+        # Порядок: type, encryption, security, pbk, fp, sni, sid, spx, flow
+        params = {}
 
         # Проверяем, есть ли настройки stream для inbound
         if hasattr(inbound, "stream_settings") and inbound.stream_settings:
@@ -284,66 +314,35 @@ class XUIApi:
                         params["spx"] = getattr(r_settings, "spiderX", None)
 
                     # Приоритет для SNI и Short ID из списков, если они заполнены
-                    if serverNames and len(serverNames) > 0:
+                    if serverNames:
                         params["sni"] = serverNames[0]
-                    if shortIds and len(shortIds) > 0:
+                    if shortIds:
                         params["sid"] = shortIds[0]
 
             # Flow (для XTLS) - если есть
             if hasattr(client, "flow") and client.flow:
                 params["flow"] = client.flow
 
-        # Построить строку запроса
-        query_string = urllib.parse.urlencode(params)
+        # Строим строку параметров
+        query_string = urlencode(params)
 
-        # Fragment (remark) - комментарий к ключу
+        # Fragment - это комментарий/название для ключа в клиенте
         fragment = f"{inbound.remark}-{client.email}"
 
-        # Complete URL - полная URL
-        full_url = f"{base_url}?{query_string}#{urllib.parse.quote(fragment)}"
+        # Полная VLESS ссылка с параметрами и фрагментом
+        full_url = f"{base_url}?{query_string}#{quote(fragment)}"
         logger.info(f"Generated VLESS config for {client.email}: {full_url}")
 
         # Возвращаем полную URL
         return full_url
 
     def get_subscription_url(self, email: str) -> str:
-        """Получить subscription URL для клиента"""
+        """Получить subscription URL"""
         # Формат subscription 3x-ui
         return f"https://{config.domain}:{config.subscription_port}/{email}"
 
-    def update_client_traffic(self, inbound_id: int, email: str, total_gb: int, expiry_time: int):
-        """Обновить лимиты трафика клиента"""
-        try:
-            # Конвертируем GB в байты для 3x-ui
-            total_bytes = total_gb * 1024 * 1024 * 1024 if total_gb > 0 else 0
-
-            # Получаем всех клиентов для конкретного inbound
-            clients = self.get_clients_by_inbound(inbound_id)
-            target_client = None
-            for client in clients:
-                if client.email == email:
-                    target_client = client
-                    break
-
-            # Проверяем, есть ли клиент с таким email
-            if not target_client:
-                logger.error(f"Client {email} not found")
-                return False
-
-            # Обновляем клиента
-            target_client.total_gb = total_bytes
-            target_client.expiry_time = expiry_time
-
-            # Обновляем клиента в inbound
-            self.api.client.update(inbound_id, target_client.id, target_client)
-            logger.info(f"Updated traffic for {email}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to update client {email}: {e}")
-            return False
-
     def delete_client(self, inbound_id: int, client_id: str):
-        """Удалить клиента из inbound"""
+        """Удалить клиента"""
         try:
             # Удаляем клиента из inbound
             self.api.client.delete(inbound_id, client_id)
@@ -356,7 +355,7 @@ class XUIApi:
     # ===== Статистика =====
 
     def get_client_stats(self, email: str) -> Optional[Dict[str, Any]]:
-        """Получить статистику трафика для клиента"""
+        """Получить статистику трафика"""
         # Получаем информацию о клиенте
         client_info = self.find_client_by_email(email)
         # Проверяем, есть ли клиент с таким email
